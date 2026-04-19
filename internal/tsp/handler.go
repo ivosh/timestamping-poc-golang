@@ -2,6 +2,7 @@ package tsp
 
 import (
 	"encoding/asn1"
+	"errors"
 	"mime"
 
 	"github.com/digitorus/timestamp"
@@ -9,8 +10,11 @@ import (
 )
 
 const (
-	failBadDataFormat = 5
-	failSystemFailure = 25
+	failBadDataFormat   = 5
+	failBadRequest      = 2
+	failUnacceptedPolicy = 15
+	failTimeNotAvailable = 14
+	failSystemFailure   = 25
 )
 
 type pkiStatusInfo struct {
@@ -53,7 +57,16 @@ func NewHandler(svc *Service) fiber.Handler {
 
 		resp, err := svc.Sign(req)
 		if err != nil {
-			rej, _ := buildRejection(failSystemFailure)
+			bit := failSystemFailure
+			switch {
+			case errors.Is(err, ErrDuplicateNonce):
+				bit = failBadRequest
+			case errors.Is(err, ErrUnacceptedPolicy):
+				bit = failUnacceptedPolicy
+			case errors.Is(err, ErrTimeNotAvailable):
+				bit = failTimeNotAvailable
+			}
+			rej, _ := buildRejection(bit)
 			return c.Status(200).Send(rej)
 		}
 

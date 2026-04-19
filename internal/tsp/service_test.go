@@ -7,8 +7,10 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
 	"math/big"
 	"net/http"
 	"strings"
@@ -53,14 +55,6 @@ func buildTSQ(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 
-	// TimeStampReq ::= SEQUENCE {
-	//   version      INTEGER { v1(1) },
-	//   messageImprint MessageImprint,
-	//   reqPolicy    TSAPolicyId OPTIONAL,
-	//   nonce        INTEGER OPTIONAL,
-	//   certReq      BOOLEAN OPTIONAL,
-	//   extensions   [0] IMPLICIT Extensions OPTIONAL
-	// }
 	type messageImprint struct {
 		HashAlgorithm pkix.AlgorithmIdentifier
 		HashedMessage []byte
@@ -90,12 +84,53 @@ func buildTSQ(t *testing.T) []byte {
 	return der
 }
 
-func TestSign(t *testing.T) {
-	id, err := tsacrypto.Generate()
+func buildTSQWithPolicy(t *testing.T, policy asn1.ObjectIdentifier) []byte {
+	t.Helper()
+	h := sha256.Sum256([]byte("hello"))
+
+	nonceBig, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 64))
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(id)
+
+	type messageImprint struct {
+		HashAlgorithm pkix.AlgorithmIdentifier
+		HashedMessage []byte
+	}
+	// RFC 3161: version, messageImprint, reqPolicy (optional), nonce (optional), certReq (optional)
+	type tsReqWithPolicy struct {
+		Version        int
+		MessageImprint messageImprint
+		ReqPolicy      asn1.ObjectIdentifier `asn1:"optional"`
+		Nonce          *big.Int              `asn1:"optional"`
+		CertReq        bool                  `asn1:"optional"`
+	}
+
+	req := tsReqWithPolicy{
+		Version: 1,
+		MessageImprint: messageImprint{
+			HashAlgorithm: pkix.AlgorithmIdentifier{
+				Algorithm: asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1},
+			},
+			HashedMessage: h[:],
+		},
+		ReqPolicy: policy,
+		Nonce:     nonceBig,
+		CertReq:   true,
+	}
+	der, err := asn1.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+func TestSign(t *testing.T) {
+	chain, err := tsacrypto.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(chain, DefaultConfig())
 
 	tsqDER := buildTSQ(t)
 
@@ -129,15 +164,29 @@ func TestSign(t *testing.T) {
 		t.Fatal("HashedMessage mismatch")
 	}
 
-	// d. TSA certificate embedded
-	if len(ts.Certificates) != 1 {
-		t.Fatalf("expected 1 certificate, got %d", len(ts.Certificates))
+	// d. Two certs embedded: leaf (index 0) + Root CA (index 1).
+	if len(ts.Certificates) != 2 {
+		t.Fatalf("expected 2 certificates, got %d", len(ts.Certificates))
 	}
-	if !ts.Certificates[0].Equal(id.Certificate) {
-		t.Fatal("embedded certificate does not match TSA identity")
+	if !ts.Certificates[0].Equal(chain.LeafCert) {
+		t.Fatal("embedded leaf certificate does not match TSA chain")
+	}
+	if !ts.Certificates[1].Equal(chain.CACert) {
+		t.Fatal("embedded CA certificate does not match TSA chain")
 	}
 
-	// e. Signature verification
+	// e. Verify the leaf was signed by the CA.
+	pool := x509.NewCertPool()
+	pool.AddCert(chain.CACert)
+	opts := x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageTimeStamping},
+	}
+	if _, err := chain.LeafCert.Verify(opts); err != nil {
+		t.Fatalf("leaf certificate chain verification failed: %v", err)
+	}
+
+	// f. Signature verification
 	var ci contentInfo
 	if _, err := asn1.Unmarshal(ts.RawToken, &ci); err != nil {
 		t.Fatalf("unmarshal contentInfo: %v", err)
@@ -151,29 +200,28 @@ func TestSign(t *testing.T) {
 	}
 	si := sd.SignerInfos[0]
 
-	// Replace [0] context tag with 0x31 (SET) for the digest input.
 	raw := slices.Clone(si.SignedAttrs.FullBytes)
 	raw[0] = 0x31
 	digest := sha512.Sum384(raw)
 
-	pub := id.Certificate.PublicKey.(*rsa.PublicKey)
+	pub := chain.LeafCert.PublicKey.(*rsa.PublicKey)
 	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA384, digest[:], si.Signature); err != nil {
 		t.Fatalf("signature verification failed: %v", err)
 	}
 }
 
 func buildHTTPRequest(body []byte, contentType string) *http.Request {
-	req, _ := http.NewRequest(http.MethodPost, "/v1/protocols/tsp/test/sign", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/protocols/tsp/test/sign", bytes.NewReader(body))
 	req.Header.Set("Content-Type", contentType)
 	return req
 }
 
 func TestHTTP(t *testing.T) {
-	id, err := tsacrypto.Generate()
+	chain, err := tsacrypto.Generate()
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := NewApp(id)
+	app := NewApp(chain, DefaultConfig())
 
 	tsqDER := buildTSQ(t)
 
@@ -199,5 +247,87 @@ func TestHTTP(t *testing.T) {
 	}
 	if resp2.StatusCode != 400 {
 		t.Fatalf("expected 400, got %d", resp2.StatusCode)
+	}
+}
+
+func TestNonceDuplicate(t *testing.T) {
+	chain, _ := tsacrypto.Generate()
+	svc := NewService(chain, DefaultConfig())
+
+	tsqDER := buildTSQ(t)
+	req, _ := timestamp.ParseRequest(tsqDER)
+
+	if _, err := svc.Sign(req); err != nil {
+		t.Fatalf("first Sign: %v", err)
+	}
+	if _, err := svc.Sign(req); !errors.Is(err, ErrDuplicateNonce) {
+		t.Fatalf("expected ErrDuplicateNonce, got %v", err)
+	}
+}
+
+func TestSnowflakeUniqueness(t *testing.T) {
+	sf := NewSnowflake()
+	const n = 10_000
+	seen := make(map[string]struct{}, n)
+	for i := 0; i < n; i++ {
+		v := sf.Generate().String()
+		if _, dup := seen[v]; dup {
+			t.Fatalf("duplicate serial at iteration %d: %s", i, v)
+		}
+		seen[v] = struct{}{}
+	}
+}
+
+func TestSnowflakeMonotonic(t *testing.T) {
+	sf := NewSnowflake()
+	prev := sf.Generate()
+	for i := 0; i < 1000; i++ {
+		next := sf.Generate()
+		if next.Cmp(prev) <= 0 {
+			t.Fatalf("non-monotonic serial: %s then %s", prev, next)
+		}
+		prev = next
+	}
+}
+
+func TestTimeQualityRejection(t *testing.T) {
+	chain, _ := tsacrypto.Generate()
+	svc := NewService(chain, DefaultConfig())
+
+	svc.tq.status.Store(int32(TQFailed))
+
+	tsqDER := buildTSQ(t)
+	req, _ := timestamp.ParseRequest(tsqDER)
+
+	_, err := svc.Sign(req)
+	if !errors.Is(err, ErrTimeNotAvailable) {
+		t.Fatalf("expected ErrTimeNotAvailable, got %v", err)
+	}
+}
+
+func TestPolicyAccepted(t *testing.T) {
+	chain, _ := tsacrypto.Generate()
+	cfg := DefaultConfig()
+	svc := NewService(chain, cfg)
+
+	tsqDER := buildTSQWithPolicy(t, cfg.DefaultPolicyOID)
+	req, _ := timestamp.ParseRequest(tsqDER)
+
+	if _, err := svc.Sign(req); err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+}
+
+func TestPolicyRejected(t *testing.T) {
+	chain, _ := tsacrypto.Generate()
+	svc := NewService(chain, DefaultConfig())
+
+	foreign := asn1.ObjectIdentifier{1, 9, 9, 9, 9}
+	tsqDER := buildTSQWithPolicy(t, foreign)
+	req, _ := timestamp.ParseRequest(tsqDER)
+
+	_, err := svc.Sign(req)
+	if !errors.Is(err, ErrUnacceptedPolicy) {
+		t.Fatalf("expected ErrUnacceptedPolicy, got %v", err)
 	}
 }

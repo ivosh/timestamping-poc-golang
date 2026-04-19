@@ -12,12 +12,12 @@ import (
 )
 
 func main() {
-	id, err := tsacrypto.Generate()
+	chain, err := tsacrypto.Generate()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	app := tsp.NewApp(id)
+	app := tsp.NewApp(chain, tsp.DefaultConfig())
 
 	port := envOrDefault("PORT", "8080")
 	log.Printf("signer-poc listening on :%s", port)

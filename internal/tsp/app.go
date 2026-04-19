@@ -5,8 +5,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func NewApp(id *tsacrypto.TSAIdentity) *fiber.App {
-	svc := NewService(id)
+func NewApp(chain *tsacrypto.TSAChain, cfg Config) *fiber.App {
+	svc := NewService(chain, cfg)
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Post("/api/v1/protocols/tsp/:profileName/sign", NewHandler(svc))
 	return app
