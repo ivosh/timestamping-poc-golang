@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/czertainly/signer-poc/internal/tsacrypto"
 	"github.com/digitorus/timestamp"
+	"github.com/examle.com/timestamping-poc-golang/internal/tsacrypto"
 )
 
 var (

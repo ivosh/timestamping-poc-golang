@@ -7,8 +7,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/czertainly/signer-poc/internal/tsacrypto"
-	"github.com/czertainly/signer-poc/internal/tsp"
+	"github.com/examle.com/timestamping-poc-golang/internal/tsacrypto"
+	"github.com/examle.com/timestamping-poc-golang/internal/tsp"
 )
 
 func main() {

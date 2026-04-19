@@ -18,8 +18,8 @@ import (
 
 	"slices"
 
-	"github.com/czertainly/signer-poc/internal/tsacrypto"
 	"github.com/digitorus/timestamp"
+	"github.com/examle.com/timestamping-poc-golang/internal/tsacrypto"
 )
 
 // Minimal ASN.1 structs for walking SignedData during signature verification.
@@ -32,7 +32,7 @@ type signerInfo struct {
 	Version            int
 	SID                asn1.RawValue
 	DigestAlgorithm    pkix.AlgorithmIdentifier
-	SignedAttrs         asn1.RawValue `asn1:"optional,tag:0"`
+	SignedAttrs        asn1.RawValue `asn1:"optional,tag:0"`
 	SignatureAlgorithm pkix.AlgorithmIdentifier
 	Signature          []byte
 }
@@ -43,7 +43,7 @@ type signedData struct {
 	EncapContentInfo asn1.RawValue
 	Certificates     asn1.RawValue `asn1:"optional,tag:0"`
 	CRLs             asn1.RawValue `asn1:"optional,tag:1"`
-	SignerInfos       []signerInfo  `asn1:"set"`
+	SignerInfos      []signerInfo  `asn1:"set"`
 }
 
 func buildTSQ(t *testing.T) []byte {

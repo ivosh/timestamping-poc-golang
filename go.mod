@@ -1,4 +1,4 @@
-module github.com/czertainly/signer-poc
+module github.com/examle.com/timestamping-poc-golang
 
 go 1.25.5
 

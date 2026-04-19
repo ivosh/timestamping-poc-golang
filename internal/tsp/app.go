@@ -1,7 +1,7 @@
 package tsp
 
 import (
-	"github.com/czertainly/signer-poc/internal/tsacrypto"
+	"github.com/examle.com/timestamping-poc-golang/internal/tsacrypto"
 	"github.com/gofiber/fiber/v2"
 )
 
